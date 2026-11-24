@@ -340,6 +340,9 @@ async function playStory(args) {
   }
 
   const url = toAudioUrl(trackId, resolved.url);
+  // 诊断：把真正交给设备的地址打出来，便于定位"放不出来"是地址问题还是传输问题
+  log('[audio] 返回给设备的 audio_url =', url);
+  log('[audio] 音频前缀来源 =', getAudioBase() ? (fs.existsSync(AUDIO_BASE_FILE) ? '文件:' + AUDIO_BASE_FILE : '环境变量 XIMALAYA_AUDIO_BASE_URL') : '无(使用 RENDER_EXTERNAL_URL/直链)');
   // proxy 模式：在把地址交给设备前，先让 health.js 把整首转码落盘（避免设备 2s 超时）
   await prefetchTrack(trackId);
   const trial = STREAM_MODE === 'direct' && /\.m4a/i.test(resolved.url || '')
@@ -509,6 +512,7 @@ function scheduleReconnect(endpoint, state) {
 
 function main() {
   log(`[boot] 喜马拉雅 MCP bridge 启动，模式=${STREAM_MODE}，音源=${COOKIE ? '登录态+匿名' : '匿名免费'}，公网=${PUBLIC_BASE || '未设置'}`);
+  log(`[boot] 音频前缀 XIMALAYA_AUDIO_BASE_URL=${AUDIO_BASE_ENV || '未设置'}，诊断开关 XIMALAYA_DIAGNOSTIC_URL=${DIAG_URL || '未设置'}`);
   if (DIAG_URL) log(`[boot] A/B 诊断模式已启用(${DIAG_AUTO ? 'auto 自动取链' : '固定地址'})：play_story 只返回明文 http 地址，不访问喜马拉雅、不转码`);
   if (!PUBLIC_BASE && STREAM_MODE === 'proxy') {
     log('[boot] 警告：未设置 RENDER_EXTERNAL_URL，proxy 模式返回的 audio_url 可能是 CDN M4A 直链');
