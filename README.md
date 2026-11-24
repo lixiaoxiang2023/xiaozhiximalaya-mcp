@@ -44,3 +44,4 @@ npm run diag                     # 实测搜索（应返回若干免费专辑）
 ## 合规
 
 仅限个人家庭自听。音源走非官方接口，版权归喜马拉雅及权利方，禁止商业/公开传播/二次分发；登录 Cookie 风控风险自担。详见 DEPLOY.md 第八节与 `lib/LICENSE.ximalaya`。
+# xiaozhiximalaya-mcp
