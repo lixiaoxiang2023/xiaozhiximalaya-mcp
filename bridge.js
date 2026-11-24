@@ -35,7 +35,20 @@ const PUBLIC_BASE = (process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_URL |
 // 设置 XIMALAYA_AUDIO_BASE_URL 为「设备可明文 http 访问」的转码代理前缀
 // （如 http://192.168.1.50:8899），设备全程不做 TLS 握手，规避该缺陷。
 // 这与 xiaozhi-netease-mcp 的 local 模式同一范式。留空则行为不变（向后兼容）。
-const AUDIO_BASE = String(process.env.XIMALAYA_AUDIO_BASE_URL || '').trim().replace(/\/+$/, '');
+const AUDIO_BASE_ENV = String(process.env.XIMALAYA_AUDIO_BASE_URL || '').trim().replace(/\/+$/, '');
+// 本机部署 + cpolar 场景：音频公网地址写在本地文件，运行时动态读取。
+// cpolar 免费版地址会变，改文件即可，无需重启 bridge / 重新部署。
+const AUDIO_BASE_FILE = process.env.XIMALAYA_AUDIO_BASE_FILE
+  || path.join(__dirname, 'audio_base.txt');
+// 本机 health.js 回环地址（预转码用，不经公网）
+const LOCAL_HEALTH = (process.env.XIMALAYA_LOCAL_HEALTH || 'http://127.0.0.1:8899').replace(/\/+$/, '');
+function getAudioBase() {
+  try {
+    const fromFile = fs.readFileSync(AUDIO_BASE_FILE, 'utf8').trim().replace(/\/+$/, '');
+    if (/^http:\/\//i.test(fromFile)) return fromFile;
+  } catch { /* 文件不存在则用环境变量 */ }
+  return AUDIO_BASE_ENV;
+}
 // 【A/B 诊断】设置后 play_story 跳过搜索/解析/转码，直接把该地址交给设备。
 // 用途：用已知可播放的明文 http MP3 验证「HTTPS TLS 握手爆栈」假设。
 // 只接受 http:// 明文地址；https 地址无法用于本诊断。
@@ -93,10 +106,19 @@ function readEndpoints() {
   const env = (process.env.XIAOZHI_MCP_ENDPOINTS || process.env.XIAOZHI_MCP_ENDPOINT || '').trim();
   if (env) return env.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean);
   const list = [];
-  for (const f of ['endpoint.txt', 'endpoint_axi.txt']) {
+  // 本机部署：优先读项目根目录 endpoint.txt（用户只需把 wss 地址粘进去）。
+  // 顺序：项目根目录 > 私有配置目录，兼容原有部署方式。
+  const files = [
+    path.join(__dirname, 'endpoint.txt'),
+    path.join(PRIVATE_DIR, 'endpoint.txt'),
+    path.join(PRIVATE_DIR, 'endpoint_axi.txt'),
+  ];
+  for (const f of files) {
     try {
-      const line = fs.readFileSync(path.join(PRIVATE_DIR, f), 'utf8').trim();
-      if (line.startsWith('wss://') || line.startsWith('ws://')) list.push(line);
+      const lines = fs.readFileSync(f, 'utf8').split(/[\n,]+/).map((s) => s.trim());
+      for (const line of lines) {
+        if ((line.startsWith('wss://') || line.startsWith('ws://')) && !list.includes(line)) list.push(line);
+      }
     } catch { /* 文件不存在 */ }
   }
   return list;
@@ -139,13 +161,14 @@ function plainHttp(url) {
 }
 
 function toAudioUrl(trackId, resolvedUrl) {
-  // 最高优先级：显式指定的明文 http 音频前缀（修复设备 TLS 栈溢出）。
+  // 最高优先级：运行时读取的明文 http 音频前缀（本机文件 > 环境变量）。
   // 仅当它是 http:// 时才采用——https 前缀解决不了栈溢出问题。
-  if (AUDIO_BASE) {
-    if (!/^http:\/\//i.test(AUDIO_BASE)) {
-      log('[audio] 警告：XIMALAYA_AUDIO_BASE_URL 不是 http:// 明文地址，无法规避设备 TLS 栈溢出');
+  const audioBase = getAudioBase();
+  if (audioBase) {
+    if (!/^http:\/\//i.test(audioBase)) {
+      log('[audio] 警告：音频公网地址不是 http:// 明文地址，无法规避设备 TLS 栈溢出:', audioBase);
     } else {
-      return `${AUDIO_BASE}/track/${trackId}`;
+      return `${audioBase}/track/${trackId}`;
     }
   }
   if (STREAM_MODE === 'direct') {
@@ -161,10 +184,11 @@ function toAudioUrl(trackId, resolvedUrl) {
 // 若等它来拉才开始 ffmpeg（冷启动数秒）必然失败——这正是网易云版踩过的坑。
 async function prefetchTrack(trackId) {
   if (STREAM_MODE !== 'proxy') return;
-  // 预转码要打到本地 health.js：优先用显式 BASE，否则用容器回环地址
-  const base = AUDIO_BASE && /^http:\/\//i.test(AUDIO_BASE)
-    ? AUDIO_BASE
-    : (PUBLIC_BASE || 'http://127.0.0.1:' + (process.env.PORT || 10000));
+  // 预转码必须打本机 health.js 回环地址：本机部署时不经 cpolar 公网绕行，
+  // 更快也更稳（cpolar 免费版 1Mbps 且随机地址，绕公网预取易超时）。
+  const base = PUBLIC_BASE && !fs.existsSync(AUDIO_BASE_FILE)
+    ? PUBLIC_BASE
+    : LOCAL_HEALTH;
   try {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 12000);

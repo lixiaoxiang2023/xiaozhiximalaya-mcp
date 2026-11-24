@@ -2,6 +2,7 @@
 config.json
 endpoint.txt
 endpoint_*.txt
+audio_base.txt
 .env
 *.log
 
