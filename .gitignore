@@ -5,6 +5,9 @@ endpoint_*.txt
 audio_base.txt
 .env
 *.log
+*.log.*
+cpolar-out.txt
+cpolar.log.*
 
 # 依赖与缓存
 node_modules/

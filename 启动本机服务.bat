@@ -7,11 +7,6 @@ echo ============================================
 echo   喜马拉雅 MCP 本机部署 - 一键启动
 echo ============================================
 echo.
-echo 启动前请确认（见《本机部署-傻瓜指引.md》）：
-echo   1. endpoint.txt 已填入小智 MCP 接入点 wss 地址
-echo   2. cpolar 已安装并创建了指向本机 8899 的 http 隧道
-echo   3. audio_base.txt 已由 cpolar 同步脚本生成
-echo.
 
 REM ---- 关键：不设 XIMALAYA_DIAGNOSTIC_URL，关闭诊断，恢复真实喜马拉雅故事播放 ----
 set XIMALAYA_DIAGNOSTIC_URL=
@@ -36,19 +31,34 @@ if not exist "endpoint.txt" (
 )
 echo [OK] endpoint.txt 存在
 
+echo [检查] cpolar ...
+set CPOLAR_EXE=C:\Program Files\cpolar\cpolar.exe
+if not exist "%CPOLAR_EXE%" (
+  echo [错误] 找不到 cpolar: %CPOLAR_EXE%
+  pause
+  exit /b 1
+)
+echo [OK] cpolar 就绪
+
 echo.
 echo 将打开 3 个窗口：
 echo   [1] health.js      - 明文音频代理 (8899)
-echo   [2] cpolar 同步     - 自动更新公网地址
-echo   [3] bridge.js      - 连小智 WSS
+echo   [2] cpolar 隧道     - 公网 http 地址（输出写入 cpolar-out.txt）
+echo   [3] bridge.js      - 连小智 WSS + 地址自动同步
 echo.
 echo 保持全部窗口开启。关闭窗口即停止对应服务。
 echo ============================================
 echo.
 
+REM [1] 音频代理
 start "喜马拉雅-音频代理" cmd /k "node health.js"
-start "喜马拉雅-cpolar地址同步" cmd /k "node sync-cpolar.js --watch"
-start "喜马拉雅-MCP bridge" cmd /k "node bridge.js"
+
+REM [2] cpolar 纯 http 隧道，输出重定向到文件供同步脚本读取；-proto http 避免设备 https TLS 崩溃
+start "喜马拉雅-cpolar隧道" cmd /k ""%CPOLAR_EXE%" http 8899 -proto http -region cn -log stdout -inspect-addr false > cpolar-out.txt 2>&1"
+
+REM [3] 地址同步(常驻) + bridge：先等隧道起来再同步一次，然后启动 bridge
+start "喜马拉雅-MCP bridge" cmd /k "node sync-cpolar.js --watch & node bridge.js"
 
 echo 三个服务已在独立窗口启动。此窗口可以关闭。
+echo 首次启动约需 10 秒建立隧道，bridge 窗口出现 [agent] agent#1 已连接 即成功。
 pause
