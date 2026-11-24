@@ -40,6 +40,15 @@ const AUDIO_BASE = String(process.env.XIMALAYA_AUDIO_BASE_URL || '').trim().repl
 // 用途：用已知可播放的明文 http MP3 验证「HTTPS TLS 握手爆栈」假设。
 // 只接受 http:// 明文地址；https 地址无法用于本诊断。
 const DIAG_URL = String(process.env.XIMALAYA_DIAGNOSTIC_URL || '').trim();
+// auto：bridge 每次调用现取一条新鲜的网易云明文 http 直链（解决直链 20 分钟时效问题）。
+// 用户只需填 XIMALAYA_DIAGNOSTIC_URL=auto，无需手动找链接。
+const DIAG_AUTO = /^(auto|1)$/i.test(DIAG_URL);
+const NCM_DIAG_API = 'https://netease-cloud-music-api-one-pied.vercel.app';
+const NCM_DIAG_TRACK_ID = '1375668619'; // 已验证：免费、可播、明文 http
+// 兜底直链（仅当公共 API 临时不可用时使用；带时效，可能过期）
+const NCM_DIAG_FALLBACK = 'http://m7.music.126.net/20261124200832/7918e5712485ef6e4d3ba825c23747c0/ymusic/535a/005f/520c/d01116b76a7568e6cc5bef132bf62ec0.mp3?vuutv=CwIsYCYnzr5ByTZaw78QSsRrWDC5uuNmxsWD2SQ+QnU9rDRhlGXch+QAIjCl/RSQEPKKFJqDBxPkVHrEPVzJREyVP6toTWme03/VrJORJYg=';
+let ncmDiagUrl = '';
+let ncmDiagAt = 0;
 const STREAM_MODE = String(resolveSetting('stream_mode', 'XIMALAYA_STREAM_MODE', 'proxy')).toLowerCase();
 // 可选喜马拉雅 Cookie（登录态解锁已购/VIP）。敏感信息，仅从环境变量读取，不落盘。
 const COOKIE = String(resolveSetting('cookie', 'XIMALAYA_COOKIE', '') || '');
@@ -235,15 +244,43 @@ function firstAlbumLine(a, i) {
   return `${i + 1}. ${a.title || '未命名'} — ${a.anchorName || '未知主播'}（${tag}，ID:${a.id}）`;
 }
 
+// auto 模式：现取一条网易云明文 http 直链。直链 20 分钟时效，缓存 10 分钟，
+// 过期自动重取；公共 API 临时不可用时退回内置兜底链并明确记日志。
+async function freshDiagUrl() {
+  if (!DIAG_AUTO) return DIAG_URL;
+  if (ncmDiagUrl && Date.now() - ncmDiagAt < 10 * 60 * 1000) return ncmDiagUrl;
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 8000);
+    const r = await fetch(`${NCM_DIAG_API}/song/url?id=${NCM_DIAG_TRACK_ID}&br=128000`, { signal: ctrl.signal });
+    clearTimeout(t);
+    if (r.ok) {
+      const j = await r.json();
+      const item = Array.isArray(j.data) ? j.data[0] : null;
+      if (item && typeof item.url === 'string' && /^http:\/\//i.test(item.url)) {
+        ncmDiagUrl = item.url;
+        ncmDiagAt = Date.now();
+        log('[diag] auto 取链成功（网易云明文 http，10 分钟缓存）');
+        return ncmDiagUrl;
+      }
+    }
+  } catch (e) {
+    log('[diag] auto 取链失败，改用兜底链:', e.message);
+  }
+  log('[diag] 警告：使用内置兜底链，可能已过 20 分钟时效');
+  return NCM_DIAG_FALLBACK;
+}
+
 async function playStory(args) {
-  // A/B 诊断模式：只返回指定地址，不碰喜马拉雅接口与 ffmpeg。
+  // A/B 诊断模式：只返回明文 http 地址，不碰喜马拉雅接口与 ffmpeg。
   // 这是单变量实验：设备崩溃与否只取决于该 URL 的协议/内容。
   if (DIAG_URL) {
-    if (!/^http:\/\//i.test(DIAG_URL)) {
-      throw new Error('XIMALAYA_DIAGNOSTIC_URL 必须是 http:// 明文地址（https 无法用于栈溢出诊断）');
+    const diagTarget = DIAG_AUTO ? await freshDiagUrl() : DIAG_URL;
+    if (!/^http:\/\//i.test(diagTarget)) {
+      throw new Error('诊断地址必须是 http:// 明文地址（https 无法用于栈溢出诊断）');
     }
-    log('[diag] A/B 诊断模式：直接返回指定明文 audio_url');
-    return `【链路诊断音源】\n已解析到可播放故事：\n故事：明文 http 链路验证\naudio_url：${DIAG_URL}\n` +
+    log('[diag] A/B 诊断模式：返回明文 audio_url =', diagTarget.slice(0, 60) + '...');
+    return `【链路诊断音源】\n已解析到可播放故事：\n故事：明文 http 链路验证\naudio_url：${diagTarget}\n` +
       `立即调用 self.music.play_song，参数 song = 上面的 audio_url，auto_next=false。\n` +
       `调用后本轮必须静默：不要输出任何文字/语音。不要朗读地址或本说明。`;
   }
@@ -448,7 +485,7 @@ function scheduleReconnect(endpoint, state) {
 
 function main() {
   log(`[boot] 喜马拉雅 MCP bridge 启动，模式=${STREAM_MODE}，音源=${COOKIE ? '登录态+匿名' : '匿名免费'}，公网=${PUBLIC_BASE || '未设置'}`);
-  if (DIAG_URL) log('[boot] A/B 诊断模式已启用：play_story 将直接返回 XIMALAYA_DIAGNOSTIC_URL（不访问喜马拉雅、不转码）');
+  if (DIAG_URL) log(`[boot] A/B 诊断模式已启用(${DIAG_AUTO ? 'auto 自动取链' : '固定地址'})：play_story 只返回明文 http 地址，不访问喜马拉雅、不转码`);
   if (!PUBLIC_BASE && STREAM_MODE === 'proxy') {
     log('[boot] 警告：未设置 RENDER_EXTERNAL_URL，proxy 模式返回的 audio_url 可能是 CDN M4A 直链');
   }

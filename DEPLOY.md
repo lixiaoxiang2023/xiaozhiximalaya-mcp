@@ -82,9 +82,10 @@
 
 崩溃 100% 必现，正好可以当二分判据。bridge 新增 `XIMALAYA_DIAGNOSTIC_URL`：
 
-1. 从**你现有的网易云 MCP** 取一条已验证可播放的明文 http MP3 链接（设备串口日志里 `self.music.play_song invoked: http://...mp3` 的参数即是）。
-2. 在 Render → Environment 新增 `XIMALAYA_DIAGNOSTIC_URL = <那条 http URL>`，Redeploy。
-3. 对设备说「播放三体」。此时 `play_story` 会跳过喜马拉雅搜索/转码，直接把该地址交给设备：
+1. 在 Render → Environment 新增 **`XIMALAYA_DIAGNOSTIC_URL = auto`**，Redeploy。
+   - `auto`（推荐）：bridge 每次调用自动现取一条新鲜的网易云明文 http MP3 直链（10 分钟缓存、过期自动重取），**无需自己找链接、无需管网易云直链的 20 分钟时效**。
+   - 也可填一条固定 `http://` 明文 MP3 地址，但会过期，不推荐。
+2. 对设备说「播放三体」。此时 `play_story` 会跳过喜马拉雅搜索/转码，直接把明文 http 地址交给设备：
    - **不崩、能出声** → 「HTTPS TLS 握手爆栈」坐实，按方案 A 搭明文代理即可根治；
    - **不崩但无声** → TLS 根因仍成立，但设备不认 M4A/该音源；仍需方案 A 的 MP3 转码代理；
    - **仍然崩** → 当前假设被推翻，需重新定位（重点查 `self.music.play_song` 对 URL 的解析路径）。
