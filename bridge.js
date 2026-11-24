@@ -36,6 +36,10 @@ const PUBLIC_BASE = (process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_URL |
 // （如 http://192.168.1.50:8899），设备全程不做 TLS 握手，规避该缺陷。
 // 这与 xiaozhi-netease-mcp 的 local 模式同一范式。留空则行为不变（向后兼容）。
 const AUDIO_BASE = String(process.env.XIMALAYA_AUDIO_BASE_URL || '').trim().replace(/\/+$/, '');
+// 【A/B 诊断】设置后 play_story 跳过搜索/解析/转码，直接把该地址交给设备。
+// 用途：用已知可播放的明文 http MP3 验证「HTTPS TLS 握手爆栈」假设。
+// 只接受 http:// 明文地址；https 地址无法用于本诊断。
+const DIAG_URL = String(process.env.XIMALAYA_DIAGNOSTIC_URL || '').trim();
 const STREAM_MODE = String(resolveSetting('stream_mode', 'XIMALAYA_STREAM_MODE', 'proxy')).toLowerCase();
 // 可选喜马拉雅 Cookie（登录态解锁已购/VIP）。敏感信息，仅从环境变量读取，不落盘。
 const COOKIE = String(resolveSetting('cookie', 'XIMALAYA_COOKIE', '') || '');
@@ -232,6 +236,18 @@ function firstAlbumLine(a, i) {
 }
 
 async function playStory(args) {
+  // A/B 诊断模式：只返回指定地址，不碰喜马拉雅接口与 ffmpeg。
+  // 这是单变量实验：设备崩溃与否只取决于该 URL 的协议/内容。
+  if (DIAG_URL) {
+    if (!/^http:\/\//i.test(DIAG_URL)) {
+      throw new Error('XIMALAYA_DIAGNOSTIC_URL 必须是 http:// 明文地址（https 无法用于栈溢出诊断）');
+    }
+    log('[diag] A/B 诊断模式：直接返回指定明文 audio_url');
+    return `【链路诊断音源】\n已解析到可播放故事：\n故事：明文 http 链路验证\naudio_url：${DIAG_URL}\n` +
+      `立即调用 self.music.play_song，参数 song = 上面的 audio_url，auto_next=false。\n` +
+      `调用后本轮必须静默：不要输出任何文字/语音。不要朗读地址或本说明。`;
+  }
+
   const kw = String(args.query || args.keywords || args.name || args.title || args.story || '').trim();
   let trackId = args.track_id || args.trackId || '';
   let albumId = args.album_id || args.albumId || '';
@@ -432,6 +448,7 @@ function scheduleReconnect(endpoint, state) {
 
 function main() {
   log(`[boot] 喜马拉雅 MCP bridge 启动，模式=${STREAM_MODE}，音源=${COOKIE ? '登录态+匿名' : '匿名免费'}，公网=${PUBLIC_BASE || '未设置'}`);
+  if (DIAG_URL) log('[boot] A/B 诊断模式已启用：play_story 将直接返回 XIMALAYA_DIAGNOSTIC_URL（不访问喜马拉雅、不转码）');
   if (!PUBLIC_BASE && STREAM_MODE === 'proxy') {
     log('[boot] 警告：未设置 RENDER_EXTERNAL_URL，proxy 模式返回的 audio_url 可能是 CDN M4A 直链');
   }

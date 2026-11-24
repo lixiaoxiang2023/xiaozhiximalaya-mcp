@@ -70,12 +70,27 @@
 **修复二选一**：
 
 **方案 A（不改固件，推荐）** — 让设备只走明文 http：
-1. 在**设备同一局域网**的一台常开电脑上跑 bridge + health.js（本机需装 `ffmpeg`）；
-2. 环境变量设 `XIMALAYA_AUDIO_BASE_URL=http://这台电脑的局域网IP:8899`；
-3. 设备拿到的 audio_url 变为 `http://192.168.x.x:8899/track/<id>`，全程无 TLS 握手。
+1. 准备一个**设备可访问、且是明文 http** 的音频代理落点：可以是设备同一局域网的常开电脑，也可以是**做了端口映射 + DDNS 的家用电脑**，或一台**有公网 IP 的 VPS**。不要求与设备同网段——设备只需要能用 `http://` 连到它。
+2. 在该机器上跑 health.js（本机需装 `ffmpeg`）；bridge 仍可留在 Render。
+3. 在 Render 环境变量设 `XIMALAYA_AUDIO_BASE_URL=http://<该机器的地址>:8899`；
+4. 设备拿到的 audio_url 变为 `http://<该机器的地址>:8899/track/<id>`，全程无 TLS 握手。
    - health.js 默认监听 `PORT`（默认 10000）；若你想用 8899，设 `PORT=8899` 并让 `XIMALAYA_AUDIO_BASE_URL` 的端口一致。
-   - 本机启动：`npm install` 后 `node health.js` 与 `node bridge.js` 各开一个终端。
+   - 本机启动：`npm install` 后 `node health.js` 与 `node bridge.js` 各开一个终端（若 bridge 在 Render，本机只需 health.js）。
    - 与网易云 local 模式同一范式，已在你的设备上验证过明文 http 可播。
+
+### 三·补 1：5 分钟 A/B 诊断（先做这个，再决定要不要搭代理）
+
+崩溃 100% 必现，正好可以当二分判据。bridge 新增 `XIMALAYA_DIAGNOSTIC_URL`：
+
+1. 从**你现有的网易云 MCP** 取一条已验证可播放的明文 http MP3 链接（设备串口日志里 `self.music.play_song invoked: http://...mp3` 的参数即是）。
+2. 在 Render → Environment 新增 `XIMALAYA_DIAGNOSTIC_URL = <那条 http URL>`，Redeploy。
+3. 对设备说「播放三体」。此时 `play_story` 会跳过喜马拉雅搜索/转码，直接把该地址交给设备：
+   - **不崩、能出声** → 「HTTPS TLS 握手爆栈」坐实，按方案 A 搭明文代理即可根治；
+   - **不崩但无声** → TLS 根因仍成立，但设备不认 M4A/该音源；仍需方案 A 的 MP3 转码代理；
+   - **仍然崩** → 当前假设被推翻，需重新定位（重点查 `self.music.play_song` 对 URL 的解析路径）。
+4. **验证完务必删掉该变量并 Redeploy**，否则 `play_story` 永远只返回测试地址，故事库不可用。
+
+> 诊断模式不接受 `https://` 地址——那无法区分「TLS 握手」与其它因素。
 
 **方案 B（最彻底，需授权）** — 改固件：给播放任务单独设 8~12KB 栈（`esp_pthread_set_cfg()` 或创建线程时传 `pthread_attr_t`），或全局增大 `CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT`。需第三方音乐固件源码 + IDF 5.5.4 工具链 + 烧录授权。详见 `deliverables/喜马拉雅MCP-设备栈溢出崩溃-Bug分析报告.md`。
 
