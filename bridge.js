@@ -30,6 +30,12 @@ const PROTOCOL_VERSION = '2024-11-05';
 const STATUS_FILE = process.env.BRIDGE_STATUS_FILE || '/tmp/bridge-status.json';
 const LOG_FILE = process.env.BRIDGE_LOG_FILE || '/tmp/bridge.log';
 const PUBLIC_BASE = (process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_URL || '').replace(/\/+$/, '');
+// 【设备栈溢出修复】部分第三方音乐固件的播放任务 pthread 栈仅约 3KB，
+// 对 https:// 地址做 mbedTLS 握手即栈溢出重启（实测崩溃任务名 pthread）。
+// 设置 XIMALAYA_AUDIO_BASE_URL 为「设备可明文 http 访问」的转码代理前缀
+// （如 http://192.168.1.50:8899），设备全程不做 TLS 握手，规避该缺陷。
+// 这与 xiaozhi-netease-mcp 的 local 模式同一范式。留空则行为不变（向后兼容）。
+const AUDIO_BASE = String(process.env.XIMALAYA_AUDIO_BASE_URL || '').trim().replace(/\/+$/, '');
 const STREAM_MODE = String(resolveSetting('stream_mode', 'XIMALAYA_STREAM_MODE', 'proxy')).toLowerCase();
 // 可选喜马拉雅 Cookie（登录态解锁已购/VIP）。敏感信息，仅从环境变量读取，不落盘。
 const COOKIE = String(resolveSetting('cookie', 'XIMALAYA_COOKIE', '') || '');
@@ -114,21 +120,42 @@ async function resolveSafe(trackId) {
 // 把解析到的播放地址转成给设备的 audio_url。
 // proxy（默认）：指向本容器 /track/<id>，由 health.js 转码成 MP3（设备可播）。
 // direct：直接给 CDN 的 M4A 直链（仅当设备确认识别 AAC 时用）。
+// 把任意 CDN 直链强制转成明文 http（喜马拉雅 aod.cos.tx.xmcdn.com 实测明文可用且不跳转）
+function plainHttp(url) {
+  return String(url || '').replace(/^https:\/\//i, 'http://');
+}
+
 function toAudioUrl(trackId, resolvedUrl) {
-  if (STREAM_MODE === 'direct') return resolvedUrl;
+  // 最高优先级：显式指定的明文 http 音频前缀（修复设备 TLS 栈溢出）。
+  // 仅当它是 http:// 时才采用——https 前缀解决不了栈溢出问题。
+  if (AUDIO_BASE) {
+    if (!/^http:\/\//i.test(AUDIO_BASE)) {
+      log('[audio] 警告：XIMALAYA_AUDIO_BASE_URL 不是 http:// 明文地址，无法规避设备 TLS 栈溢出');
+    } else {
+      return `${AUDIO_BASE}/track/${trackId}`;
+    }
+  }
+  if (STREAM_MODE === 'direct') {
+    // direct 模式下也强制明文 http，避免设备对 CDN https 直链做握手
+    return plainHttp(resolvedUrl);
+  }
   if (PUBLIC_BASE) return `${PUBLIC_BASE}/track/${trackId}`;
-  // 无公网地址时退回直链（本地部署场景，需设备能直连容器）
-  return resolvedUrl;
+  // 无公网地址时退回明文直链（本地部署场景，需设备能直连容器）
+  return plainHttp(resolvedUrl);
 }
 
 // 返回 audio_url 前先触发 health.js 预转码。设备拉流超时约 2s，
 // 若等它来拉才开始 ffmpeg（冷启动数秒）必然失败——这正是网易云版踩过的坑。
 async function prefetchTrack(trackId) {
-  if (STREAM_MODE !== 'proxy' || !PUBLIC_BASE) return;
+  if (STREAM_MODE !== 'proxy') return;
+  // 预转码要打到本地 health.js：优先用显式 BASE，否则用容器回环地址
+  const base = AUDIO_BASE && /^http:\/\//i.test(AUDIO_BASE)
+    ? AUDIO_BASE
+    : (PUBLIC_BASE || 'http://127.0.0.1:' + (process.env.PORT || 10000));
   try {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 12000);
-    const r = await fetch(`${PUBLIC_BASE}/prefetch/${trackId}`, { signal: ctrl.signal });
+    const r = await fetch(`${base}/prefetch/${trackId}`, { signal: ctrl.signal });
     clearTimeout(t);
     log('[prefetch]', trackId, r.status);
   } catch (e) {

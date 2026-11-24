@@ -61,6 +61,26 @@
 
 > Render 会自动注入 `RENDER_EXTERNAL_URL`，bridge 和 health.js 据此生成 `/track/:id` 的公网地址——**不用手填**。
 
+## 三·补充：【必读】设备端 HTTPS 栈溢出修复
+
+**症状**：设备播放时 `***ERROR*** A stack overflow in task pthread has been detected.` 并重启。MCP 服务端日志一切正常（bridge 已连接、工具调用成功），问题在**设备固件**。
+
+**根因**：部分第三方音乐固件播放任务（`pthread`）栈仅约 3KB，对 `https://` 音频地址做 mbedTLS TLS 握手时栈溢出。你现有的网易云 MCP 之所以正常，是因为它返回**明文 http CDN 直链**，设备从不做 TLS 握手。
+
+**修复二选一**：
+
+**方案 A（不改固件，推荐）** — 让设备只走明文 http：
+1. 在**设备同一局域网**的一台常开电脑上跑 bridge + health.js（本机需装 `ffmpeg`）；
+2. 环境变量设 `XIMALAYA_AUDIO_BASE_URL=http://这台电脑的局域网IP:8899`；
+3. 设备拿到的 audio_url 变为 `http://192.168.x.x:8899/track/<id>`，全程无 TLS 握手。
+   - health.js 默认监听 `PORT`（默认 10000）；若你想用 8899，设 `PORT=8899` 并让 `XIMALAYA_AUDIO_BASE_URL` 的端口一致。
+   - 本机启动：`npm install` 后 `node health.js` 与 `node bridge.js` 各开一个终端。
+   - 与网易云 local 模式同一范式，已在你的设备上验证过明文 http 可播。
+
+**方案 B（最彻底，需授权）** — 改固件：给播放任务单独设 8~12KB 栈（`esp_pthread_set_cfg()` 或创建线程时传 `pthread_attr_t`），或全局增大 `CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT`。需第三方音乐固件源码 + IDF 5.5.4 工具链 + 烧录授权。详见 `deliverables/喜马拉雅MCP-设备栈溢出崩溃-Bug分析报告.md`。
+
+> 向后兼容：不设 `XIMALAYA_AUDIO_BASE_URL` 时行为与旧版完全一致；`direct` 模式现在也会把 CDN 直链强制转成明文 http。
+
 ## 四、必须做的一步：保活
 
 Render 免费层 15 分钟无入站请求就休眠。两道保险：
