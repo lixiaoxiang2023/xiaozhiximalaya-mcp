@@ -1,0 +1,16 @@
+# 凭据与私有配置（绝不入库）
+config.json
+endpoint.txt
+endpoint_*.txt
+.env
+*.log
+
+# 依赖与缓存
+node_modules/
+.cache/
+*.mp3
+*.part
+
+# 系统
+.DS_Store
+Thumbs.db

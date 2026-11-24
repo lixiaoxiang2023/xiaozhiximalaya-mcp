@@ -1,0 +1,25 @@
+# Render Blueprint：整套服务作为一个免费 Web Service 部署。
+# 单容器两个进程（health + bridge），避免拆两个服务各占 730 小时超额。
+services:
+  - type: web
+    name: xiaozhi-ximalaya-mcp
+    runtime: docker
+    plan: free
+    region: singapore
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      # proxy = 云端把 M4A 转成 MP3（设备可播，默认）
+      # direct = 直接返回 CDN M4A 直链（仅设备支持 AAC 时用）
+      - key: XIMALAYA_STREAM_MODE
+        value: proxy
+      - key: XIMALAYA_TRANSCODE_SR
+        value: "24000"
+      - key: XIMALAYA_TRANSCODE_BR
+        value: "48"
+      # 以下在 Render 控制台手填，不要写进仓库
+      - key: XIAOZHI_MCP_ENDPOINTS
+        sync: false
+      - key: XIMALAYA_COOKIE
+        sync: false

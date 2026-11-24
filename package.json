@@ -1,0 +1,21 @@
+{
+  "name": "xiaozhi-ximalaya-mcp",
+  "version": "1.0.0",
+  "description": "小智 AI 喜马拉雅原声故事 MCP bridge（WSS 外连 + M4A→MP3 转码代理）",
+  "main": "bridge.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "sh start.sh",
+    "bridge": "node bridge.js",
+    "health": "node health.js",
+    "check": "node --check bridge.js && node --check health.js && node --check lib/xmly.mjs",
+    "diag": "node -e \"import('./lib/xmly.mjs').then(async m=>{const r=await m.searchAlbums('三体',1,3);console.log(JSON.stringify(r.albums.map(a=>({id:a.id,title:a.title,isPaid:a.isPaid})),null,2))})\""
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "license": "MIT"
+}
