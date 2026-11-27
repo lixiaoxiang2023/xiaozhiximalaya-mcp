@@ -30,11 +30,15 @@ const PROTOCOL_VERSION = '2024-11-05';
 const STATUS_FILE = process.env.BRIDGE_STATUS_FILE || '/tmp/bridge-status.json';
 const LOG_FILE = process.env.BRIDGE_LOG_FILE || '/tmp/bridge.log';
 const PUBLIC_BASE = (process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_URL || '').replace(/\/+$/, '');
-// 【设备栈溢出修复】部分第三方音乐固件的播放任务 pthread 栈仅约 3KB，
-// 对 https:// 地址做 mbedTLS 握手即栈溢出重启（实测崩溃任务名 pthread）。
-// 设置 XIMALAYA_AUDIO_BASE_URL 为「设备可明文 http 访问」的转码代理前缀
-// （如 http://192.168.1.50:8899），设备全程不做 TLS 握手，规避该缺陷。
-// 这与 xiaozhi-netease-mcp 的 local 模式同一范式。留空则行为不变（向后兼容）。
+// 【设备栈溢出修复 → 已升级为 https 优先】早期第三方音乐固件的播放任务 pthread
+// 栈仅约 3KB，对 https:// 地址做 mbedTLS 握手即栈溢出重启（实测崩溃任务名 pthread），
+// 当时靠 XIMALAYA_AUDIO_BASE_URL 指向「设备可明文 http 访问」的转码代理前缀
+// （如本机 cpolar 隧道 http://xxx.cpolar.cn）规避 TLS 握手。
+// 现固件侧已把播放线程栈提升到 10240B，可稳定完成 TLS 握手；因此 proxy 模式
+// 改为优先使用 Render 自带 https 端点（PUBLIC_BASE，形如 https://xxx.onrender.com），
+// 设备直连稳定 https 地址，彻底不再依赖易变且会失效的 cpolar 域名。
+// XIMALAYA_AUDIO_BASE_URL 现仅作「本机部署、无 PUBLIC_BASE」时的明文 http 回退，
+// 留空则行为不变（向后兼容）。
 const AUDIO_BASE_ENV = String(process.env.XIMALAYA_AUDIO_BASE_URL || '').trim().replace(/\/+$/, '');
 // 本机部署 + cpolar 场景：音频公网地址写在本地文件，运行时动态读取。
 // cpolar 免费版地址会变，改文件即可，无需重启 bridge / 重新部署。
@@ -161,8 +165,27 @@ function plainHttp(url) {
 }
 
 function toAudioUrl(trackId, resolvedUrl) {
-  // 最高优先级：运行时读取的明文 http 音频前缀（本机文件 > 环境变量）。
-  // 仅当它是 http:// 时才采用——https 前缀解决不了栈溢出问题。
+  // direct 模式：保持原行为不变——运行时明文 http 前缀优先（本机文件 > 环境变量），
+  // 命中则用 <audioBase>/track/<id>；否则强制明文 http 的 CDN 直链（避免握手）。
+  // direct 分支不读 PUBLIC_BASE，纯本机/诊断用途。
+  if (STREAM_MODE === 'direct') {
+    const audioBase = getAudioBase();
+    if (audioBase) {
+      if (!/^http:\/\//i.test(audioBase)) {
+        log('[audio] 警告：音频公网地址不是 http:// 明文地址，无法规避设备 TLS 栈溢出:', audioBase);
+      } else {
+        return `${audioBase}/track/${trackId}`;
+      }
+    }
+    return plainHttp(resolvedUrl);
+  }
+
+  // proxy 模式（默认）：优先 Render 自带 https 端点。固件播放线程栈已提升到
+  // 10240B，可完成 mbedTLS 握手，设备直连稳定 https 地址，不再依赖 cpolar 隧道。
+  // 这样即使部署环境的 XIMALAYA_AUDIO_BASE_URL 仍是旧 cpolar 值（已 404）也不受影响。
+  if (PUBLIC_BASE) return `${PUBLIC_BASE}/track/${trackId}`;
+
+  // 无 PUBLIC_BASE（本机部署场景）：才回退到明文 http 前缀（本机文件 > 环境变量）
   const audioBase = getAudioBase();
   if (audioBase) {
     if (!/^http:\/\//i.test(audioBase)) {
@@ -171,12 +194,7 @@ function toAudioUrl(trackId, resolvedUrl) {
       return `${audioBase}/track/${trackId}`;
     }
   }
-  if (STREAM_MODE === 'direct') {
-    // direct 模式下也强制明文 http，避免设备对 CDN https 直链做握手
-    return plainHttp(resolvedUrl);
-  }
-  if (PUBLIC_BASE) return `${PUBLIC_BASE}/track/${trackId}`;
-  // 无公网地址时退回明文直链（本地部署场景，需设备能直连容器）
+  // 无任何公网/本地前缀：退回明文直链（需设备能直连容器）
   return plainHttp(resolvedUrl);
 }
 
@@ -340,9 +358,21 @@ async function playStory(args) {
   }
 
   const url = toAudioUrl(trackId, resolved.url);
-  // 诊断：把真正交给设备的地址打出来，便于定位"放不出来"是地址问题还是传输问题
+  // 诊断：把真正交给设备的地址打出来，便于定位"放不出来"是地址问题还是传输问题。
+  // 来源判断须与 toAudioUrl 决策顺序一致，否则 https 场景会被误报成 cpolar 环境变量。
   log('[audio] 返回给设备的 audio_url =', url);
-  log('[audio] 音频前缀来源 =', getAudioBase() ? (fs.existsSync(AUDIO_BASE_FILE) ? '文件:' + AUDIO_BASE_FILE : '环境变量 XIMALAYA_AUDIO_BASE_URL') : '无(使用 RENDER_EXTERNAL_URL/直链)');
+  let audioSrc;
+  if (STREAM_MODE !== 'direct' && PUBLIC_BASE) {
+    audioSrc = 'PUBLIC_BASE / Render 自带 https 端点 (' + PUBLIC_BASE + ')';
+  } else {
+    const base = getAudioBase();
+    if (base && /^http:\/\//i.test(base)) {
+      audioSrc = fs.existsSync(AUDIO_BASE_FILE) ? '本机文件:' + AUDIO_BASE_FILE : '环境变量 XIMALAYA_AUDIO_BASE_URL（本机回退）';
+    } else {
+      audioSrc = 'CDN 明文直链 (plainHttp)';
+    }
+  }
+  log('[audio] audio_url 来源 =', audioSrc);
   // proxy 模式：在把地址交给设备前，先让 health.js 把整首转码落盘（避免设备 2s 超时）
   await prefetchTrack(trackId);
   const trial = STREAM_MODE === 'direct' && /\.m4a/i.test(resolved.url || '')
