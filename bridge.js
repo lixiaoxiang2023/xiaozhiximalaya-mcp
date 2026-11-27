@@ -30,6 +30,10 @@ const PROTOCOL_VERSION = '2024-11-05';
 const STATUS_FILE = process.env.BRIDGE_STATUS_FILE || '/tmp/bridge-status.json';
 const LOG_FILE = process.env.BRIDGE_LOG_FILE || '/tmp/bridge.log';
 const PUBLIC_BASE = (process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_URL || '').replace(/\/+$/, '');
+// 保险开关：proxy 模式是否优先走 Render 自带 https。默认开启（根治目标）；
+// 设为 0/false/no/off 则回退明文 http 前缀——用于「新 bridge 已部署但设备尚未烧录
+// 10KB 栈新固件」的过渡窗口，防止旧固件 3KB 栈对 https 做 TLS 握手崩溃。
+const HTTPS_FIRST = !/^(0|false|no|off)$/i.test(String(process.env.XIMALAYA_HTTPS_FIRST || '').trim());
 // 【设备栈溢出修复 → 已升级为 https 优先】早期第三方音乐固件的播放任务 pthread
 // 栈仅约 3KB，对 https:// 地址做 mbedTLS 握手即栈溢出重启（实测崩溃任务名 pthread），
 // 当时靠 XIMALAYA_AUDIO_BASE_URL 指向「设备可明文 http 访问」的转码代理前缀
@@ -183,7 +187,7 @@ function toAudioUrl(trackId, resolvedUrl) {
   // proxy 模式（默认）：优先 Render 自带 https 端点。固件播放线程栈已提升到
   // 10240B，可完成 mbedTLS 握手，设备直连稳定 https 地址，不再依赖 cpolar 隧道。
   // 这样即使部署环境的 XIMALAYA_AUDIO_BASE_URL 仍是旧 cpolar 值（已 404）也不受影响。
-  if (PUBLIC_BASE) return `${PUBLIC_BASE}/track/${trackId}`;
+  if (HTTPS_FIRST && PUBLIC_BASE) return `${PUBLIC_BASE}/track/${trackId}`;
 
   // 无 PUBLIC_BASE（本机部署场景）：才回退到明文 http 前缀（本机文件 > 环境变量）
   const audioBase = getAudioBase();
@@ -362,7 +366,7 @@ async function playStory(args) {
   // 来源判断须与 toAudioUrl 决策顺序一致，否则 https 场景会被误报成 cpolar 环境变量。
   log('[audio] 返回给设备的 audio_url =', url);
   let audioSrc;
-  if (STREAM_MODE !== 'direct' && PUBLIC_BASE) {
+  if (STREAM_MODE !== 'direct' && HTTPS_FIRST && PUBLIC_BASE) {
     audioSrc = 'PUBLIC_BASE / Render 自带 https 端点 (' + PUBLIC_BASE + ')';
   } else {
     const base = getAudioBase();
